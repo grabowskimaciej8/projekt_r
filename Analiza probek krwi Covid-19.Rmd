@@ -1,0 +1,367 @@
+---
+title: "Analiza próbek krwi pacjentów COVID-19"
+date: "Data generacji: `r format(Sys.time(), '%d.%m.%Yr.')`"
+output: github_document
+always_allow_html: true
+---
+Maciej Grabowski
+```{r setup, include=FALSE} 
+knitr::opts_chunk$set(warning = FALSE, message = FALSE) 
+```
+```{r, echo=FALSE, warning=FALSE}
+# Poniższy kod sprawdza, czy wszystkie wymagane biblioteki zostały zainstalowane, w przeciwnym razie instaluje brakujace
+packages <- c("readxl", "knitr", "tidyr", "dplyr","lattice","data.table", "ggplot2", "plotly","caret")
+if ( length(missing_pkgs <- setdiff(packages, rownames(installed.packages()))) > 0) {
+  message("Installing missing package(s): ", paste(missing_pkgs, collapse = ", "))
+  install.packages(missing_pkgs)
+}
+```
+
+## Spis treści
+
+**[1. Wprowadzenie](#wprowadzenie)**
+
+  * [1.1. Spostrzeżenia](#wyniki)
+  * [1.2. Wykorzystane biblioteki](#biblioteki)
+  * [1.3. Użyte wersje bibliotek](#wersje)
+  
+**[2. Przekształcenia danych](#etl)**
+
+  * [2.1. Dane źródłowe](#dane)
+  * [2.2. Zmiana nazw kolumn i formatu danych](#etl1)
+  * [2.3. Wypełnienie w dół brakujących wartości](#etl2)
+  * [2.4. Dodanie kolumn obliczeniowych](#etl3)
+  * [2.5. Zmiana typu danych](#etl4)
+  * [2.6. Agregacja danych i przygotowanie zbiorów danych](#etl5)
+  
+**[3. Eksploracja danych](#datamining)**
+  
+  * [3.1. Analiza wartości atrybutów](#statystyki)
+  * [3.2. Analiza korelacji atrybutów](#korelacja)
+  * [3.3. Wizualizacja danych](#wizualizacja)
+
+
+**[4.Prognozowanie](#machinelearning)**
+
+  * [4.1. Klasyfikacja przypadków](#klasyfikacja)
+  * [4.2. Podział zbioru danych](#schemat)
+  * [4.3. Uczenie](#uczenie)
+  * [4.4. Predykcja](#predykcja)
+  * [4.5. Optymalizacja parametrów](#optymalizacja)
+  * [4.6. Wizualizacja - model caret](#model)
+  
+**[5. Wyniki](#summary)**
+
+
+## 1. Wprowadzenie <a name="wprowadzenie"></a>
+
+Analizie poddano próbki krwi 485 pacjentów z regionu Wuhan w Chinach, aby zidentyfikować znaczące markery ryzyka śmiertelności w wyniku choroby COVID-19.
+
+### 1.1 Spostrzeżenia <a name="wyniki"></a>
+
+Podwyższony wiek, stosunek liczby neutrofili do limfocytów (NLR) wiąże się z wyższą śmiertelnością z powodu COVID-19.
+
+
+### 1.2 Wykorzystane biblioteki <a name="biblioteki"></a>
+
+```{r}
+library(knitr, warn.conflicts = FALSE)
+library(tidyr, warn.conflicts = FALSE)
+library(dplyr, warn.conflicts = FALSE)
+library(lattice, warn.conflicts = FALSE)
+library(ggplot2, warn.conflicts = FALSE)
+library(plotly, warn.conflicts = FALSE)
+library(corrplot, warn.conflicts = FALSE)
+library(readxl, warn.conflicts = FALSE)
+library(data.table, warn.conflicts = FALSE)
+library(caret, warn.conflicts = FALSE)
+
+``` 
+
+### 1.3 Wersje bibliotek <a name="wersje"></a>
+
+```{r}
+installed.packages()[names(sessionInfo()$otherPkgs), "Version"]
+``` 
+
+## 2. Przekształcenia danych <a name="etl"></a>
+
+Dane źródłowe dostarczono w formie pliku Excel (.xlsx). Dane źródłowe wymagają dalszych przekształceń celem poddania analizie. W procesie ETL przewidziano następujące kroki:
+
+* wczytanie danych i przypisanie do zmiennej data.raw
+* zmiana nazw kolumn na bardziej czytelne
+* operacja "wypełnij w dół" (uzupełnienie danych brakujących - ID pacjent)
+* zmiana typu danych (na potrzeby agregacji)
+* agreagacja danych
+* dodanie kolumny obliczeniowej (obliczenie czasu pobytu pacjenta, NLR)
+* filtrowanie (wartości NA,NAN)
+
+### 2.1 Dane źródłowe <a name="dane"></a>
+
+**Wczytanie danych i przypisanie do zmiennej raw.data:**
+
+```{r}
+library(readxl) # bibliteka odpowiedzialna za szybkie wczytanie danych z pliku Excel
+data.raw <- read_excel(paste0(getwd(),"/wuhan_blood_sample_data_Jan_Feb_2020.xlsx"))
+```
+
+**Liczba wierszy i kolumn w zbiorze danych:**
+
+```{r}
+dim(data.raw)
+```
+**Podgląd danych źródłowych:**
+
+```{r}
+library(knitr) # biblioteka odpowiedzialna za renderowanie kodu
+kable(head(data.raw[1:2, ]), "pipe",caption = "Tabela 1. Podgląd dwóćh pierwszych wierszy danych źródłowych")
+```
+
+### 2.2 Zmiana nazw kolumn i typu danych dla wybranych atrybutów <a name="etl1"></a>
+
+```{r}
+library(data.table)
+setnames(data.raw, old = c('PATIENT_ID','RE_DATE','age','gender','Admission time','Discharge time','outcome'), new = c('ID pacjent','Data pobrania','Wiek','Płeć','Data przyjęcia', 'Data opuszczenia','Śmierć'))
+
+```
+**Zmiana formatu daty dla wybranych kolumn**
+
+```{r}
+data.raw$'Data pobrania' = as.Date(format(data.raw$'Data pobrania', "%Y-%m-%d"))
+data.raw$'Data przyjęcia' = as.Date(format(data.raw$'Data przyjęcia', "%Y-%m-%d"))
+data.raw$'Data opuszczenia' = as.Date(format(data.raw$'Data opuszczenia', "%Y-%m-%d"))
+
+```
+
+### 2.4 Wypełnienie w dół brakujących wartości (ID pacjent) <a name="etl2"></a>
+
+ ```{r}
+library(tidyr)
+fill(data.raw, "ID pacjent") -> data.raw
+
+```
+
+### 2.5 Doddanie kolumny z informacją o długości pobytu pacjenta <a name="etl3"></a>
+
+```{r}
+dl_pobytu<-as.integer(round(difftime(data.raw$`Data opuszczenia`,data.raw$`Data przyjęcia`,units = "days"),0))
+data.raw<-cbind(data.raw,"Dł.pobytu"=dl_pobytu)
+
+```
+
+### Doddanie kolumny obliczeniowej "Neutrophil to lymphocyte ratio" (NLR) <a name="etl3"></a>
+
+```{r}
+NLR <-ifelse(data.raw$'lymphocyte count'==0,NA,data.raw$'neutrophils count'/data.raw$'lymphocyte count')
+data.raw <- cbind(data.raw,  "NLR"=NLR )
+ 
+```
+
+### 2.6 Zmiana typu danych <a name="etl4"></a>
+
+```{r}
+data.raw[,c(1,3,4)]<-sapply(data.raw[,c(1,3,4)],as.integer)
+data.raw[,7]<-sapply(data.raw[,7],as.logical)
+
+```
+
+**Lista atrybutów oraz typy danych po przekształceniu:**
+
+```{r}
+class(data.raw)
+
+rbind(classe = sapply(data.raw, typeof)) %>% 
+kable(caption = "Tabela 2. Lista atrybutów oraz typy danych")
+```
+
+### 2.7 Agregacja danych  <a name="etl5"></a>
+
+```{r}
+##dane do Wykresu 2
+wide_data <- data.raw  %>% group_by(data.raw$'Data opuszczenia') %>% summarise(liczba_smierci=sum(Śmierć==1),liczba_ocalonych=sum(Śmierć==0), NLR=median(NLR,na.rm=TRUE))
+colnames(wide_data) <-c("Data opuszczenia","Liczba śmierci","Liczba ocalonych","NLR")
+
+##dane do Wykresu 3
+
+wykres_3a<-data.raw[(data.raw$Śmierć==1),] %>% filter(!is.na(NLR))
+wykres_3a <- wykres_3a  %>% group_by(wykres_3a$'Data opuszczenia')  %>% summarise(liczba_smierci=sum(Śmierć==1), NLR=mean(NLR,na.rm=TRUE))
+wykres_3a<-cbind(wykres_3a,"Śmierć")
+colnames(wykres_3a) <-c("Data opuszczenia","Liczba przypadków","NLR","Grupa")
+
+wykres_3b<-data.raw[(data.raw$Śmierć==0),] %>% filter(!is.na(NLR))
+wykres_3b <- wykres_3b  %>% group_by(wykres_3b$'Data opuszczenia')  %>% summarise(liczba_ocalonych=sum(Śmierć==0), NLR=mean(NLR,na.rm=TRUE))
+wykres_3b<-cbind(wykres_3b,"Ocalony")
+colnames(wykres_3b) <-c("Data opuszczenia","Liczba przypadków","NLR","Grupa")
+
+wykres_3 <- rbind(wykres_3a,wykres_3b) 
+
+##dane do Wykresu 4
+GroupedByPatientDF <- aggregate(data.raw[, -c(1, 2, 5, 6)], by = list(data.raw$'ID pacjent'), FUN = mean, na.rm = TRUE)  %>% filter('lymphocyte count' != 0)  %>%  arrange('ID pacjent')
+GroupedByPatientDF["Śmierć"][GroupedByPatientDF["Śmierć"] == 1] <- "Nie_przezyl"
+GroupedByPatientDF["Śmierć"][GroupedByPatientDF["Śmierć"] == 0] <- "Przezyl"
+GroupedByPatientDF <- GroupedByPatientDF  %>% filter(!is.nan(NLR)) 
+
+##dane do klasyfikacji
+
+GroupedByPatientClass <- aggregate(data.raw[, c(1, 3, 7, 39,46,83)], by = list(data.raw$'ID pacjent'), FUN = mean, na.rm = TRUE)  %>% filter('lymphocyte count' != 0)  %>%  arrange('ID pacjent')
+GroupedByPatientClass["Śmierć"][GroupedByPatientClass["Śmierć"] == 1] <- "Nie_przezyl"
+GroupedByPatientClass["Śmierć"][GroupedByPatientClass["Śmierć"] == 0] <- "Przezyl"
+GroupedByPatientClass <- GroupedByPatientClass  %>% filter(!is.nan(NLR)) 
+colnames(GroupedByPatientClass)<-c("Grupa","ID_pacjent","Wiek","Status","lymphocyte_count","neutrophils_count","NLR")
+```
+
+## Eksploracja danych <a name="datamining"></a>
+
+### 3.1 Analiza wartości atrybutów <a name="statystyki"></a>
+
+```{r}
+summary(data.raw$Wiek, na.rm=TRUE)
+summary(data.raw$Dł.pobytu,na.rm=TRUE)
+summary(data.raw$'White blood cell count',na.rm=TRUE)
+summary(data.raw$'Red blood cell count',na.rm=TRUE)
+summary(data.raw$'lymphocyte count',na.rm=TRUE)
+summary(data.raw$'neutrophils count',na.rm=TRUE)
+summary(data.raw$'hemoglobin',na.rm=TRUE)
+summary(data.raw$'Dł.pobytu',na.rm=TRUE)
+summary(data.raw$'NLR',na.rm=TRUE)
+```
+
+### 3.2 Analiza korelacji atrybutów <a name="korelacja"></a>
+
+```{r}
+cor(data.raw[,c(3,4,7,9,33,39,41,46,82,83)],use="pairwise.complete.obs") %>% kable()
+cr<-cor(data.raw[,c(3,4,7,9,33,39,41,46,82,83)],use="pairwise.complete.obs")
+corrplot(cr, title="Wykres 1. Analiza korelacji pomiędzy zmiennymi",mar=c(0,0,1,0))
+```
+
+### 3.3 Wizualizacja danych <a name="wizualizacja"></a>
+
+```{r}
+library(tidyr)
+library(ggplot2)
+
+## Wykres 2 ---------------------------------------------------------------
+# utworzenie wartosci dla osi x
+wide_data$x <- as.factor(wide_data$'Data opuszczenia')
+
+# Przejscie z układu danych wide do long
+
+data_long <- gather(wide_data, Atrybut, Wartość, -x)
+ggplot() +
+  # plot bars:
+  geom_col(data = subset(data_long, Atrybut==c('Liczba ocalonych','Liczba smierci')),
+           mapping = aes(x = x, y = Wartość, fill = Atrybut),
+           position = position_dodge()) +
+
+# formatowanie Wykresu
+  scale_fill_manual(values = c( "Liczba śmierci" = "red","Liczba ocalonych" = "blue")) +
+  theme_minimal() +
+  labs(title = "Wykres 2. Łączna liczba przypadków śmiertelnych vs. ocalonych", x = "Data", y = "Liczba pacjentów") +
+    theme(plot.title = element_text(size = 16),
+        axis.title.x = element_text(size = 12),
+        axis.title.y = element_text(size = 12),
+        axis.text.x = element_text(angle = 45, hjust = 1))
+
+## Wykres 3 ------------------------------------------------------------
+wykres_3$'Data opuszczenia' <- factor(wykres_3$'Data opuszczenia')
+
+ggplot(data=wykres_3, aes(x=wykres_3$'Data opuszczenia',y=NLR, group=Grupa)) +
+  geom_line(aes(color=Grupa)) + theme_minimal() +
+  labs(title = "Wykres 3. NLR pacjentów ocalonych vs. śmiertelnych w czasie", x = "Data opuszczenia", y = "Wartość wskaźnika NLR") +  
+  scale_color_manual(values = c("#0000FF","#FF0000")) +
+  theme(plot.title = element_text(size = 16),
+        axis.title.x = element_text(size = 12),
+        axis.title.y = element_text(size = 12),
+        axis.text.x = element_text(angle = 45, hjust = 1))
+
+## Wykres 4 ------------------------------------------------------------
+
+ggplot(GroupedByPatientDF, aes(x=Wiek, y=NLR ,col =Śmierć)) + geom_point() +labs(title = "Wykres 4. Wpływ wskaźnika NLR oraz wieku na śmiertelność Covid-19",colour = "Status") + ylim(0, 100) + scale_color_manual(values = c("Przezyl" = '#0000ff','Nie_przezyl' = '#FF0000') )
+```
+
+## 4. Klasyfikacja <a name="machinelearning"></a>
+
+Celem predykcji jest określenie, czy pacjent przeżyje lub umrze na podstawie wartości wybranych atrybutów, które go cechują.
+
+### 4.1 Podział zbioru danych <a name="klasyfikacja"></a> ###
+
+```{r}
+library(caret)
+set.seed(23)
+inTraining <-
+    createDataPartition(
+        # atrybut do stratyfikacji
+        y = GroupedByPatientClass$Status,
+        # procent w zbiorze uczącym
+        p = .75,
+        # chcemy indeksy a nie listę
+        list = FALSE)
+
+training <- GroupedByPatientClass[ inTraining,]
+testing  <- GroupedByPatientClass[-inTraining,]
+```
+
+### 4.2 Schemat uczenia <a name="schemat"></a>  ###
+
+```{r}
+ctrl <- trainControl(
+    # powtórzona ocena krzyżowa
+    method = "repeatedcv",
+    # liczba podziałów
+    number = 2,
+    # liczba powtórzeń
+    repeats = 5)
+
+```
+
+### 4.3 Uczenie <a name="uczenie"></a> ###
+
+```{r}
+set.seed(23)
+fit <- train(Status ~ .,
+             data = training,
+             method = "rf",
+             trControl = ctrl,
+             # Paramter dla algorytmu uczącego
+             ntree = 10)
+fit
+
+```
+### 4.4 Predykcja <a name="predykcja"></a> ###
+```{r}
+rfClasses <- predict(fit, newdata = testing)
+confusionMatrix(table(rfClasses, testing$Status)) 
+```
+
+### 4.5 Optymalizacja parametrów <a name="optymalizacja"></a> ###
+
+```{r}
+rfGrid <- expand.grid(mtry = 10:30)
+gridCtrl <- trainControl(
+    method = "repeatedcv",
+    summaryFunction = twoClassSummary,
+    classProbs = TRUE,
+    number = 2,
+    repeats = 5)
+```
+```{r}
+set.seed(23)
+fitTune <- train(Status ~ .,
+             data = training,
+             method = "rf",
+             metric = "ROC",
+             preProc = c("center", "scale"),
+             trControl = gridCtrl,
+             tuneGrid = rfGrid,
+             ntree = 10)
+fitTune
+```
+### 4.6 Wizualizacja - model caret <a name="model"></a> ###
+
+```{r}
+ggplot(fitTune) + theme_bw() + ggtitle("Wykres 5. Wizualizacja modelu ML")
+```
+
+## 5. Otrzymane wyniki <a name="summary"></a>
+
+Wskaźnik NLR, będący ilorazem neutrofili do lymfocytów w połączeniu z podwyższonym wiekiem jest kluczowym markerem powodującym wzrost śmiertelności pacjentów na COVID-19.
